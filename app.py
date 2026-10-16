@@ -14,8 +14,23 @@ except Exception:
 
 try:
     import torch
+    import torch.nn.functional as F
 except Exception:
     torch = None
+
+try:
+    from rdkit import Chem
+    from rdkit.Chem import Descriptors, Draw
+    RDKIT_AVAILABLE = True
+except Exception:
+    RDKIT_AVAILABLE = False
+
+# Try import torch_geometric (optional)
+try:
+    from torch_geometric.data import Data
+    TORCH_GEOMETRIC_AVAILABLE = True
+except Exception:
+    TORCH_GEOMETRIC_AVAILABLE = False
 
 # Page Configuration
 st.set_page_config(
@@ -80,6 +95,10 @@ def user_input_features():
     return pd.DataFrame(data, index=[0])
 
 input_df = user_input_features()
+
+# SMILES input for graph-based GNN inference
+st.sidebar.header("SMILES input (optional for GNN)")
+smiles_input = st.sidebar.text_input("SMILES (for GNN graph input)", value="CCc1ccncc1", help="Provide a SMILES string to run graph-based GNN inference.")
 
 # Models directory
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -156,7 +175,56 @@ with col2:
     st.subheader("🎯 Prediction & Analysis")
     selected_model = st.selectbox("Select model", options=available_names)
 
-    def model_predict(model_name, X_df):
+    # GNN input mode selection
+    gnn_input_mode = st.radio("GNN input mode", options=["Descriptors (7 features)", "Graph (SMILES)"], index=0) if 'GNN' in available_names or 'GNN' in available_names else "Descriptors (7 features)"
+
+    def smiles_to_graph(smiles: str):
+        """Convert SMILES to a simple graph representation usable by many GNNs.
+        Returns either a torch_geometric.data.Data if PyG is available, or a tuple (x, edge_index).
+        x: [num_nodes, num_node_features]
+        edge_index: [2, num_edges]
+        """
+        if not RDKIT_AVAILABLE:
+            raise RuntimeError("RDKit is required to convert SMILES to graph. Install rdkit via conda-forge.")
+
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            raise ValueError("Invalid SMILES provided.")
+
+        # Node features: atomic number, degree, total_num_H, implicit valence, aromatic
+        atom_features = []
+        for atom in mol.GetAtoms():
+            atom_features.append([
+                atom.GetAtomicNum(),
+                atom.GetDegree(),
+                atom.GetTotalNumHs(),
+                atom.GetFormalCharge(),
+                1 if atom.GetIsAromatic() else 0,
+            ])
+        x = np.array(atom_features, dtype=np.float32)
+
+        # Edges
+        edge_list = []
+        for bond in mol.GetBonds():
+            a1 = bond.GetBeginAtomIdx()
+            a2 = bond.GetEndAtomIdx()
+            edge_list.append((a1, a2))
+            edge_list.append((a2, a1))
+        if len(edge_list) == 0:
+            edge_index = np.zeros((2, 0), dtype=np.int64)
+        else:
+            edge_index = np.array(edge_list, dtype=np.int64).T
+
+        if TORCH_GEOMETRIC_AVAILABLE and torch is not None:
+            x_t = torch.tensor(x, dtype=torch.float)
+            edge_t = torch.tensor(edge_index, dtype=torch.long)
+            data = Data(x=x_t, edge_index=edge_t)
+            return data
+
+        # fallback: return numpy arrays
+        return x, edge_index
+
+    def model_predict(model_name, X_df, gnn_mode='Descriptors', smiles=None):
         model_obj = models.get(model_name)
         # If model not present, create a lightweight fallback (for demo) only for XGBoost and RF
         if model_obj is None:
@@ -176,30 +244,76 @@ with col2:
             else:
                 return None, None
 
-        # GNN inference: try to accept the 7-descriptor vector if the model supports it
+        # GNN inference
         if model_name == 'GNN':
             if torch is None or model_obj is None:
                 return None, None
-            try:
-                import torch.nn.functional as F
-                t = torch.tensor(X_df.values, dtype=torch.float32)
-                with torch.no_grad():
-                    out = model_obj(t)
-                out_np = out.detach().cpu().numpy()
-                # For binary logits/probabilities
-                if out_np.ndim == 2 and out_np.shape[1] == 2:
-                    probs = out_np
-                    labels = probs.argmax(axis=1)
-                else:
-                    # assume single logit
-                    logits = out_np.ravel()
-                    probs_pos = 1 / (1 + np.exp(-logits))
-                    probs = np.vstack([1 - probs_pos, probs_pos]).T
-                    labels = (probs_pos > 0.5).astype(int)
-                return labels, probs
-            except Exception as e:
-                st.warning(f"GNN inference failed with descriptor input: {e}")
-                return None, None
+
+            # Descriptor-based input (7 features)
+            if gnn_mode == 'Descriptors':
+                try:
+                    t = torch.tensor(X_df.values, dtype=torch.float32)
+                    with torch.no_grad():
+                        out = model_obj(t)
+                    out_np = out.detach().cpu().numpy()
+                    if out_np.ndim == 2 and out_np.shape[1] == 2:
+                        probs = out_np
+                        labels = probs.argmax(axis=1)
+                    else:
+                        logits = out_np.ravel()
+                        probs_pos = 1 / (1 + np.exp(-logits))
+                        probs = np.vstack([1 - probs_pos, probs_pos]).T
+                        labels = (probs_pos > 0.5).astype(int)
+                    return labels, probs
+                except Exception as e:
+                    st.warning(f"GNN inference failed with descriptor input: {e}")
+                    return None, None
+
+            # Graph-based input (SMILES -> graph)
+            else:
+                if smiles is None:
+                    st.warning("No SMILES provided for graph-based GNN input.")
+                    return None, None
+                try:
+                    graph = smiles_to_graph(smiles)
+                except Exception as e:
+                    st.warning(f"Failed to convert SMILES to graph: {e}")
+                    return None, None
+
+                try:
+                    # If we have a torch_geometric Data object, pass directly
+                    if TORCH_GEOMETRIC_AVAILABLE and isinstance(graph, Data):
+                        data = graph
+                        data = data.to(next(model_obj.parameters()).device) if hasattr(model_obj, 'parameters') else data
+                        with torch.no_grad():
+                            out = model_obj(data)
+                        out_np = out.detach().cpu().numpy()
+                    else:
+                        # fallback: graph is (x, edge_index) numpy arrays
+                        x_np, edge_index = graph
+                        x_t = torch.tensor(x_np, dtype=torch.float32)
+                        edge_t = torch.tensor(edge_index, dtype=torch.long)
+                        # Try common call signatures
+                        with torch.no_grad():
+                            try:
+                                out = model_obj(x_t, edge_t)
+                            except Exception:
+                                out = model_obj(x_t)
+                        out_np = out.detach().cpu().numpy()
+
+                    if out_np.ndim == 2 and out_np.shape[1] == 2:
+                        probs = out_np
+                        labels = probs.argmax(axis=1)
+                    else:
+                        logits = out_np.ravel()
+                        probs_pos = 1 / (1 + np.exp(-logits))
+                        probs = np.vstack([1 - probs_pos, probs_pos]).T
+                        labels = (probs_pos > 0.5).astype(int)
+
+                    return labels, probs
+                except Exception as e:
+                    st.warning(f"GNN inference with graph input failed: {e}")
+                    return None, None
 
         # Standard sklearn/xgboost API
         try:
@@ -217,7 +331,7 @@ with col2:
         return labels, proba
 
     if st.button("Run Bioactivity Prediction"):
-        labels, proba = model_predict(selected_model, input_df)
+        labels, proba = model_predict(selected_model, input_df, gnn_mode=('Descriptors' if gnn_input_mode.startswith('Descriptors') else 'Graph'), smiles=smiles_input if gnn_input_mode.startswith('Graph') else None)
         if labels is None:
             st.error("Model is unavailable or cannot accept the provided input format.")
         else:
