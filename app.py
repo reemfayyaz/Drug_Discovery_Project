@@ -22,6 +22,13 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Header: attribution
+st.markdown("""
+<div style="padding: 8px 0;">
+  <p style="margin:0; color: #6b7280; font-size:14px;">Made by Data Scientist/Engineer <strong>Reem Fayyaz</strong></p>
+</div>
+""", unsafe_allow_html=True)
+
 # Custom CSS Styling for a polished UI
 st.markdown("""
     <style>
@@ -240,7 +247,7 @@ elif nav_option == "🧬 2D Molecule Inspector":
 # ---------------------------------------------------------
 elif nav_option == "🤖 Live Model Inference":
     st.markdown("### ⚡ Live Model Inference & Prediction Workbench")
-    st.markdown("Input molecular physicochemical descriptors to perform real-time prediction using the serialized XGBoost model (`Drug_Discovery_models.pkl`), alongside simulated GNN & Random Forest inference.")
+    st.markdown("Input molecular physicochemical descriptors to perform real-time prediction using the serialized XGBoost model (`Drug_Discovery_models.pkl`), alongside simulated GNN & Random For[...]")
 
     with st.form("inference_form"):
         col1, col2, col3 = st.columns(3)
@@ -310,3 +317,7 @@ elif nav_option == "📁 Dataset Explorer":
         file_name="drug_discovery_filtered_results.csv",
         mime="text/csv"
     )
+
+# Footer attribution
+st.markdown("---")
+st.markdown("<div style='text-align:center; color:#6b7280; font-size:12px;'>Made with ❤️ by Data Scientist/Engineer <strong>Reem Fayyaz</strong></div>", unsafe_allow_html=True)
