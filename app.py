@@ -200,16 +200,16 @@ def predict_gnn(model, input_mode: str, features_df: pd.DataFrame | None = None,
         try:
             graph = build_graph_from_smiles(smiles)
             with torch.no_grad():
-                try:
-                    if TORCH_GEOMETRIC_AVAILABLE and hasattr(graph, "x"):
-                        out = model(graph)
-                    else:
-                        x, edge_index = graph
-                        try:
-                            out = model(torch.tensor(x, dtype=torch.float32), torch.tensor(edge_index, dtype=torch.long))
-                        except Exception:
-                            out = model(torch.tensor(x, dtype=torch.float32))
+                if TORCH_GEOMETRIC_AVAILABLE and hasattr(graph, "x"):
+                    out = model(graph)
+                else:
+                    x, edge_index = graph
+                    try:
+                        out = model(torch.tensor(x, dtype=torch.float32), torch.tensor(edge_index, dtype=torch.long))
+                    except Exception:
+                        out = model(torch.tensor(x, dtype=torch.float32))
                 out_np = out.detach().cpu().numpy()
+
             if out_np.ndim == 2 and out_np.shape[1] > 1:
                 probs = out_np[0]
                 label = int(np.argmax(probs))
