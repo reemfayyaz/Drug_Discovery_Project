@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import io
-import json
+import sys
 from pathlib import Path
-from typing import Optional
 
 import joblib
 import matplotlib.pyplot as plt
@@ -14,7 +12,7 @@ try:
     from rdkit import Chem
     from rdkit.Chem import Descriptors, Draw
     RDKIT_AVAILABLE = True
-except ImportError:
+except Exception:
     RDKIT_AVAILABLE = False
 
 FEATURE_COLUMNS = [
@@ -30,7 +28,7 @@ FEATURE_COLUMNS = [
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_PATH = PROJECT_ROOT / "data" / "drug_discovery_10k_dataset.csv"
 MODEL_DIR = PROJECT_ROOT / "models"
-
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 st.set_page_config(
     page_title="Drug Discovery AI",
@@ -65,19 +63,26 @@ def inject_css() -> None:
 
 @st.cache_data(show_spinner=False)
 def load_dataset(path: str) -> pd.DataFrame:
-    df = pd.read_csv(path)
-    return df
+    return pd.read_csv(path)
 
 
-@st.cache_resource(show_spinner="Loading or training machine-learning models...")
+@st.cache_resource(show_spinner="Loading models...")
 def load_models(dataset_path: str):
-    """Load saved models when available; otherwise train them from the project dataset."""
+    """Load saved models if available; otherwise return None values to keep startup lightweight."""
     xgb_path = MODEL_DIR / "xgboost_model.joblib"
     rf_path = MODEL_DIR / "random_forest_model.joblib"
 
     if xgb_path.exists() and rf_path.exists():
-        return joblib.load(xgb_path), joblib.load(rf_path), "saved"
+        try:
+            return joblib.load(xgb_path), joblib.load(rf_path), "saved"
+        except Exception:
+            return None, None, "missing"
 
+    return None, None, "missing"
+
+
+def train_and_save_models(dataset_path: str):
+    """Train models from the dataset and save them to the models directory."""
     from sklearn.ensemble import RandomForestClassifier
     from sklearn.model_selection import train_test_split
     from xgboost import XGBClassifier
@@ -89,9 +94,7 @@ def load_models(dataset_path: str):
     if y.nunique() < 2:
         raise ValueError("Prediction_Class must contain both ACTIVE and INACTIVE classes.")
 
-    X_train, _, y_train, _ = train_test_split(
-        X, y, test_size=0.20, random_state=42, stratify=y
-    )
+    X_train, _, y_train, _ = train_test_split(X, y, test_size=0.20, random_state=42, stratify=y)
 
     xgb_model = XGBClassifier(
         n_estimators=100,
@@ -110,13 +113,19 @@ def load_models(dataset_path: str):
 
     xgb_model.fit(X_train, y_train)
     rf_model.fit(X_train, y_train)
+
+    xgb_path = MODEL_DIR / "xgboost_model.joblib"
+    rf_path = MODEL_DIR / "random_forest_model.joblib"
+    joblib.dump(xgb_model, xgb_path)
+    joblib.dump(rf_model, rf_path)
+
     return xgb_model, rf_model, "trained"
 
 
 def extract_features(smiles: str):
-    """Parse a SMILES string and calculate the seven model features."""
+    """Calculate descriptors from a SMILES string. Returns (mol, features) or (None, None)."""
     if not RDKIT_AVAILABLE:
-        raise RuntimeError("RDKit is not installed. Install dependencies from requirements.txt.")
+        return None, None
 
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -143,15 +152,12 @@ def lipinski_rule_of_five(features: dict) -> tuple[int, str]:
             features["HBA_Count"] > 10,
         ]
     )
-    status = (
-        "PASS"
-        if violations <= 1
-        else "FAIL"
-    )
-    return violations, status
+    return violations, "PASS" if violations <= 1 else "FAIL"
 
 
 def predict(features: dict, model):
+    if model is None:
+        return "MODEL_UNAVAILABLE", 0.0
     X = pd.DataFrame([features], columns=FEATURE_COLUMNS)
     label = int(model.predict(X)[0])
     probability = float(model.predict_proba(X)[0, 1])
@@ -162,11 +168,11 @@ def batch_screen(df: pd.DataFrame, model) -> pd.DataFrame:
     records = []
     for smiles in df["SMILES"].astype(str):
         mol, features = extract_features(smiles)
-        if mol is None:
+        if mol is None or features is None:
             records.append(
                 {
                     "SMILES": smiles,
-                    "Prediction": "INVALID",
+                    "Prediction": "INVALID_OR_PARSING_FAILED",
                     "Probability_%": None,
                     "Lipinski_Violations": None,
                     "Lipinski_Status": "N/A",
@@ -206,24 +212,25 @@ def main():
     inject_css()
     page = render_sidebar()
 
-    if not RDKIT_AVAILABLE:
-        st.error("RDKit is unavailable. Install the project dependencies before using molecular functions.")
-        st.stop()
-
     if not DATA_PATH.exists():
         st.warning(
             f"Dataset not found at `{DATA_PATH}`. "
             "Place `drug_discovery_10k_dataset.csv` inside the project's `data/` folder."
         )
-        st.info("You can still review the application code, but model inference requires the training dataset.")
-        st.stop()
+        st.info("The app will still run but model training/evaluation requires the dataset.")
+
+    data = None
+    if DATA_PATH.exists():
+        try:
+            data = load_dataset(str(DATA_PATH))
+        except Exception as exc:
+            st.error(f"Failed to load dataset: {exc}")
 
     try:
-        data = load_dataset(str(DATA_PATH))
         xgb_model, rf_model, model_source = load_models(str(DATA_PATH))
     except Exception as exc:
-        st.error(f"Application initialization failed: {exc}")
-        st.stop()
+        st.error(f"Failed to initialize models: {exc}")
+        xgb_model, rf_model, model_source = None, None, "error"
 
     if page == "Overview":
         st.title("Drug Discovery AI Platform")
@@ -233,11 +240,12 @@ def main():
             "bioactivity classification."
         )
 
+        dataset_rows = f"{len(data):,}" if data is not None else "Missing"
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Dataset Rows", f"{len(data):,}")
+        c1.metric("Dataset Rows", dataset_rows)
         c2.metric("Features", len(FEATURE_COLUMNS))
         c3.metric("Model Engines", "2")
-        c4.metric("Model Status", "Saved" if model_source == "saved" else "Runtime trained")
+        c4.metric("Model Status", "Saved" if model_source == "saved" else "Missing")
 
         st.subheader("Workflow")
         st.markdown(
@@ -251,11 +259,20 @@ def main():
             """
         )
 
-        st.info(
-            "Important: predictions are computational screening outputs, not clinical or "
-            "regulatory conclusions. The PyTorch GNN shown in the original notebook is "
-            "not used here because it was initialized but not trained on labeled data."
-        )
+        if data is not None and model_source != "saved":
+            if st.button("Train models now", type="primary"):
+                try:
+                    with st.spinner("Training models (this may take a few minutes)..."):
+                        xgb_model, rf_model, model_source = train_and_save_models(str(DATA_PATH))
+                    st.success("Models trained and saved to the repository's models/ directory.")
+                except Exception as exc:
+                    st.error(f"Model training failed: {exc}")
+
+        if not RDKIT_AVAILABLE:
+            st.warning(
+                "RDKit is not installed. Install it via conda-forge (recommended): "
+                "conda install -c conda-forge rdkit"
+            )
 
     elif page == "Single Molecule":
         st.title("Single Molecule Analysis")
@@ -263,15 +280,8 @@ def main():
 
         left, right = st.columns([1.15, 0.85])
         with left:
-            smiles = st.text_input(
-                "SMILES",
-                value="CCc1ccncc1",
-                help="Example: CCc1ccncc1",
-            )
-            model_name = st.selectbox(
-                "Inference model",
-                ["XGBoost", "Random Forest"],
-            )
+            smiles = st.text_input("SMILES", value="CCc1ccncc1", help="Example: CCc1ccncc1")
+            model_name = st.selectbox("Inference model", ["XGBoost", "Random Forest"])
             run = st.button("Run Analysis", type="primary", use_container_width=True)
 
         with right:
@@ -283,12 +293,20 @@ def main():
             )
 
         if run:
+            if not RDKIT_AVAILABLE:
+                st.error("RDKit is not installed in this environment. Molecular parsing is disabled.")
+                return
+
             mol, features = extract_features(smiles.strip())
             if mol is None:
                 st.error("Invalid SMILES. Please enter a chemically valid SMILES string.")
                 return
 
             model = xgb_model if model_name == "XGBoost" else rf_model
+            if model is None:
+                st.error("No model is available. Train the model from the Overview page first.")
+                return
+
             prediction, probability = predict(features, model)
             violations, ro5_status = lipinski_rule_of_five(features)
 
@@ -355,91 +373,105 @@ def main():
             if "SMILES" not in batch_df.columns:
                 st.error("The uploaded CSV must contain a column named `SMILES`.")
             elif st.button("Run Batch Screening", type="primary"):
-                model = xgb_model if model_name == "XGBoost" else rf_model
-                with st.spinner("Screening molecules..."):
-                    results = batch_screen(batch_df[["SMILES"]].copy(), model)
+                if not RDKIT_AVAILABLE:
+                    st.error("RDKit is not installed in this environment. Batch screening is disabled.")
+                else:
+                    model = xgb_model if model_name == "XGBoost" else rf_model
+                    if model is None:
+                        st.error("No model is available. Train models from the Overview page first.")
+                    else:
+                        with st.spinner("Screening molecules..."):
+                            results = batch_screen(batch_df[["SMILES"]].copy(), model)
 
-                active_count = int((results["Prediction"] == "ACTIVE").sum())
-                invalid_count = int((results["Prediction"] == "INVALID").sum())
+                        active_count = int((results["Prediction"] == "ACTIVE").sum())
+                        invalid_count = int((results["Prediction"] == "INVALID_OR_PARSING_FAILED").sum())
 
-                a, b, c = st.columns(3)
-                a.metric("Compounds Processed", f"{len(results):,}")
-                b.metric("Predicted Active", f"{active_count:,}")
-                c.metric("Invalid SMILES", f"{invalid_count:,}")
+                        a, b, c = st.columns(3)
+                        a.metric("Compounds Processed", f"{len(results):,}")
+                        b.metric("Predicted Active", f"{active_count:,}")
+                        c.metric("Invalid SMILES", f"{invalid_count:,}")
 
-                st.dataframe(results, use_container_width=True, hide_index=True)
+                        st.dataframe(results, use_container_width=True, hide_index=True)
 
-                st.download_button(
-                    "Download Screening Results",
-                    results.to_csv(index=False).encode("utf-8"),
-                    file_name="predicted_hits.csv",
-                    mime="text/csv",
-                    type="primary",
-                )
+                        st.download_button(
+                            "Download Screening Results",
+                            results.to_csv(index=False).encode("utf-8"),
+                            file_name="predicted_hits.csv",
+                            mime="text/csv",
+                            type="primary",
+                        )
 
     elif page == "Model Performance":
         st.title("Model Performance")
         st.caption("Evaluation is performed on a held-out stratified test split from the project dataset.")
 
-        from sklearn.metrics import (
-            accuracy_score,
-            f1_score,
-            precision_score,
-            recall_score,
-            roc_auc_score,
-        )
-        from sklearn.model_selection import train_test_split
-
-        clean = data.dropna(subset=FEATURE_COLUMNS + ["Prediction_Class"]).copy()
-        X = clean[FEATURE_COLUMNS]
-        y = (clean["Prediction_Class"].astype(str).str.upper() == "ACTIVE").astype(int)
-        _, X_test, _, y_test = train_test_split(
-            X, y, test_size=0.20, random_state=42, stratify=y
-        )
-
-        rows = []
-        for name, model in [("XGBoost", xgb_model), ("Random Forest", rf_model)]:
-            pred = model.predict(X_test)
-            prob = model.predict_proba(X_test)[:, 1]
-            rows.append(
-                {
-                    "Model": name,
-                    "Accuracy": accuracy_score(y_test, pred),
-                    "Precision": precision_score(y_test, pred, zero_division=0),
-                    "Recall": recall_score(y_test, pred, zero_division=0),
-                    "F1": f1_score(y_test, pred, zero_division=0),
-                    "ROC-AUC": roc_auc_score(y_test, prob),
-                }
+        if data is None:
+            st.error("Dataset is required to calculate model performance. Add the dataset to the data/ folder.")
+        else:
+            from sklearn.metrics import (
+                accuracy_score,
+                f1_score,
+                precision_score,
+                recall_score,
+                roc_auc_score,
             )
+            from sklearn.model_selection import train_test_split
 
-        metrics_df = pd.DataFrame(rows).set_index("Model")
-        st.dataframe(metrics_df.style.format("{:.3f}"), use_container_width=True)
+            clean = data.dropna(subset=FEATURE_COLUMNS + ["Prediction_Class"]).copy()
+            X = clean[FEATURE_COLUMNS]
+            y = (clean["Prediction_Class"].astype(str).str.upper() == "ACTIVE").astype(int)
+            _, X_test, _, y_test = train_test_split(X, y, test_size=0.20, random_state=42, stratify=y)
 
-        fig, ax = plt.subplots(figsize=(9, 4.5))
-        metrics_df.plot(kind="bar", ax=ax, ylim=(0, 1))
-        ax.set_ylabel("Score")
-        ax.set_xlabel("")
-        ax.set_title("Model Comparison")
-        ax.tick_params(axis="x", rotation=0)
-        ax.grid(axis="y", alpha=0.25)
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close(fig)
+            rows = []
+            for name, model in [("XGBoost", xgb_model), ("Random Forest", rf_model)]:
+                if model is None:
+                    rows.append({"Model": name, "Accuracy": None, "Precision": None, "Recall": None, "F1": None, "ROC-AUC": None})
+                    continue
+
+                pred = model.predict(X_test)
+                prob = model.predict_proba(X_test)[:, 1]
+                rows.append(
+                    {
+                        "Model": name,
+                        "Accuracy": accuracy_score(y_test, pred),
+                        "Precision": precision_score(y_test, pred, zero_division=0),
+                        "Recall": recall_score(y_test, pred, zero_division=0),
+                        "F1": f1_score(y_test, pred, zero_division=0),
+                        "ROC-AUC": roc_auc_score(y_test, prob),
+                    }
+                )
+
+            metrics_df = pd.DataFrame(rows).set_index("Model")
+            st.dataframe(metrics_df.style.format("{:.3f}"), use_container_width=True)
+
+            fig, ax = plt.subplots(figsize=(9, 4.5))
+            metrics_df.fillna(0).plot(kind="bar", ax=ax, ylim=(0, 1))
+            ax.set_ylabel("Score")
+            ax.set_xlabel("")
+            ax.set_title("Model Comparison")
+            ax.tick_params(axis="x", rotation=0)
+            ax.grid(axis="y", alpha=0.25)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
 
     elif page == "Dataset":
         st.title("Dataset Explorer")
         st.caption("Read-only view of the training dataset used by the application.")
 
-        st.dataframe(data.head(100), use_container_width=True, hide_index=True)
+        if data is None:
+            st.info("Dataset not present. Add the CSV to the data/ folder to enable this view.")
+        else:
+            st.dataframe(data.head(100), use_container_width=True, hide_index=True)
 
-        if "Prediction_Class" in data.columns:
-            counts = data["Prediction_Class"].value_counts()
-            st.subheader("Class Distribution")
-            st.bar_chart(counts)
+            if "Prediction_Class" in data.columns:
+                counts = data["Prediction_Class"].value_counts()
+                st.subheader("Class Distribution")
+                st.bar_chart(counts)
 
-        st.subheader("Missing Values")
-        missing = data.isna().sum().sort_values(ascending=False).to_frame("Missing Values")
-        st.dataframe(missing, use_container_width=True)
+            st.subheader("Missing Values")
+            missing = data.isna().sum().sort_values(ascending=False).to_frame("Missing Values")
+            st.dataframe(missing, use_container_width=True)
 
 
 if __name__ == "__main__":
