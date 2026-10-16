@@ -1,0 +1,16 @@
+name: drugdiscovery
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - rdkit=2023.*
+  - scikit-learn
+  - xgboost
+  - pandas
+  - joblib
+  - matplotlib
+  - streamlit
+  - pip
+  - pip:
+      - rdkit-pypi  # optional fallback; conda-forge is strongly recommended
