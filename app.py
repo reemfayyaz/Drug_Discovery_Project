@@ -22,18 +22,11 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Header: attribution
-st.markdown("""
-<div style="padding: 8px 0;">
-  <p style="margin:0; color: #6b7280; font-size:14px;">Made by Data Scientist/Engineer <strong>Reem Fayyaz</strong></p>
-</div>
-""", unsafe_allow_html=True)
-
 # Custom CSS Styling for a polished UI
 st.markdown("""
     <style>
     .main {
-        background-color: #f8fafc;
+        background: linear-gradient(135deg, #f8fafc 0%, #eef6ff 100%);
     }
     .stMetric {
         background-color: #ffffff;
@@ -56,7 +49,46 @@ st.markdown("""
         background-color: #3b82f6 !important;
         color: white !important;
     }
+    .custom-header {
+        background: linear-gradient(90deg, #0f172a 0%, #1d4ed8 40%, #7c3aed 100%);
+        color: white;
+        padding: 18px 22px;
+        border-radius: 16px;
+        margin: 0 0 18px 0;
+        box-shadow: 0 8px 20px rgba(59, 130, 246, 0.2);
+    }
+    .custom-header .title {
+        font-size: 1.2rem;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+        margin: 0;
+    }
+    .custom-header .subtitle {
+        font-size: 0.9rem;
+        color: rgba(255,255,255,0.85);
+        margin: 6px 0 0 0;
+    }
+    .custom-footer {
+        margin-top: 20px;
+        padding: 14px 18px;
+        border-radius: 12px;
+        text-align: center;
+        background: linear-gradient(90deg, #ecfeff 0%, #f5f3ff 50%, #fef3c7 100%);
+        border: 1px solid #e0e7ff;
+        color: #312e81;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+    }
     </style>
+""", unsafe_allow_html=True)
+
+# Header: attribution
+st.markdown("""
+<div class="custom-header">
+  <div class="title">🧬 Drug Discovery AI Dashboard</div>
+  <div class="subtitle">Made by Data Scientist/Engineer <strong>Reem Fayyaz</strong></div>
+</div>
 """, unsafe_allow_html=True)
 
 # Load Data and Model
@@ -71,7 +103,7 @@ def load_model():
         with open("Drug_Discovery_models.pkl", "rb") as f:
             model = pickle.load(f)
         return model
-    except Exception as e:
+    except Exception:
         return None
 
 df = load_data()
@@ -247,7 +279,7 @@ elif nav_option == "🧬 2D Molecule Inspector":
 # ---------------------------------------------------------
 elif nav_option == "🤖 Live Model Inference":
     st.markdown("### ⚡ Live Model Inference & Prediction Workbench")
-    st.markdown("Input molecular physicochemical descriptors to perform real-time prediction using the serialized XGBoost model (`Drug_Discovery_models.pkl`), alongside simulated GNN & Random For[...]")
+    st.markdown("Input molecular physicochemical descriptors to perform real-time prediction using the serialized XGBoost model (`Drug_Discovery_models.pkl`), alongside simulated GNN & Random Forest inference.")
 
     with st.form("inference_form"):
         col1, col2, col3 = st.columns(3)
@@ -320,4 +352,8 @@ elif nav_option == "📁 Dataset Explorer":
 
 # Footer attribution
 st.markdown("---")
-st.markdown("<div style='text-align:center; color:#6b7280; font-size:12px;'>Made with ❤️ by Data Scientist/Engineer <strong>Reem Fayyaz</strong></div>", unsafe_allow_html=True)
+st.markdown("""
+<div class="custom-footer">
+  Made with ❤️ by Data Scientist/Engineer <strong>Reem Fayyaz</strong>
+</div>
+""", unsafe_allow_html=True)
